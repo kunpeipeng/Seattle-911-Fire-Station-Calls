@@ -1,0 +1,533 @@
+---
+title: "Final"
+author: "Brett Penfold"
+date: "3/14/2021"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, eval=FALSE}
+install.packages("caTools")
+
+install.packages("rpart")
+install.packages("rpart.plot")
+install.packages("caret")
+install.packages("geosphere")
+
+```
+
+```{r}
+library(caTools)
+library(rpart)
+library(rpart.plot)
+library(caret)
+library(stringr)
+
+set.seed(1234)
+
+```
+
+
+```{r}
+conditions <- read.csv("Road_Weather_Information_Stations2.csv")
+```
+
+
+#Explore 
+```{r}
+stations = unique(conditions$StationName)
+print(stations)
+
+locations = unique(conditions$StationLocation)
+print(locations)
+```
+# Create subset of Conditions Data
+
+```{r}
+library(dplyr)
+library(data.table)
+library(lubridate)
+
+conditions$DateTime = mdy_hms(conditions$DateTime,tz=Sys.timezone())
+conditions = conditions[!duplicated(conditions),]
+conditions = conditions[year(conditions$DateTime) != 2019 , ]
+conditions2 <- setDT(conditions)[order(DateTime)]
+
+conditions2 <- conditions2[minute(DateTime)==0 & hour(DateTime) %in% c(0,6,12,18),]
+```
+
+# Separate Latitude and Longitude
+```{r}
+for (i in 1:nrow(conditions2)) {
+  location_split = str_split(conditions2$StationLocation[i]," ",simplify = TRUE)
+  conditions2$lat[i] = as.numeric(gsub("\\)", '', location_split[3]))
+  conditions2$long[i] = as.numeric(gsub("\\(", '', location_split[2]))
+  
+}
+```
+
+```{r}
+stations = unique(conditions2$StationName)
+unique_lat = unique(conditions2$lat)
+unique_long = unique(conditions2$long)
+print(stations)
+print(unique_lat)
+print(unique_long)
+```
+# Create station ID
+```{r}
+conditions2$stationid = NA
+for (i in 1:nrow(conditions2)) {
+ conditions2$stationid[i]= which(conditions2$StationName[i] == stations)
+}
+```
+
+
+# Read Calls data
+```{r}
+calls <- read.csv("Seattle_Real_Time_Fire_911_Calls.csv")
+calls$Datetime = mdy_hms(calls$Datetime,tz=Sys.timezone())
+```
+
+# Create subset of calls data
+
+# Subset by finding Dates in range of conditions data
+```{r}
+calls2 = subset(calls, calls$Datetime > min(conditions2$DateTime) & calls$Datetime < max(conditions2$DateTime))
+```
+#Select only aid response or medic response
+
+```{r}
+
+library(stringr)
+#calls2 = subset(calls2, Type == 'Aid Response' | Type == 'Medic Response')
+#calls2 = subset(calls2, Type == 'Medic Response')
+
+
+#calls2 = calls2[str_detect(calls2$Type, "Fire") | str_detect(calls2$Type, "fire"),]
+```
+
+#Convert to Data Table
+```{r}
+calls2 = data.table(calls2)
+```
+
+
+# Calculate distance of call to each weather station
+```{r}
+
+calls2$distance1 = NA
+calls2$distance2 = NA
+calls2$distance3 = NA
+calls2$distance4 = NA
+calls2$distance5 = NA
+calls2$distance6 = NA
+calls2$distance7 = NA
+calls2$distance8 = NA
+
+
+library(geosphere)
+
+for (i in 1:nrow(calls2)) {
+calls2$distance1[i] <- distm(c(calls2$Longitude[i], calls2$Latitude[i]), c(unique_long[1], unique_lat[1]), fun = distHaversine)
+calls2$distance2[i] <- distm(c(calls2$Longitude[i], calls2$Latitude[i]), c(unique_long[2], unique_lat[2]), fun = distHaversine)
+calls2$distance3[i] <- distm(c(calls2$Longitude[i], calls2$Latitude[i]), c(unique_long[3], unique_lat[3]), fun = distHaversine)
+calls2$distance4[i] <- distm(c(calls2$Longitude[i], calls2$Latitude[i]), c(unique_long[4], unique_lat[4]), fun = distHaversine)
+calls2$distance5[i] <- distm(c(calls2$Longitude[i], calls2$Latitude[i]), c(unique_long[5], unique_lat[5]), fun = distHaversine)
+calls2$distance6[i] <- distm(c(calls2$Longitude[i], calls2$Latitude[i]), c(unique_long[6], unique_lat[6]), fun = distHaversine)
+calls2$distance7[i] <- distm(c(calls2$Longitude[i], calls2$Latitude[i]), c(unique_long[7], unique_lat[7]), fun = distHaversine)
+calls2$distance8[i] <- distm(c(calls2$Longitude[i], calls2$Latitude[i]), c(unique_long[8], unique_lat[8]), fun = distHaversine)
+
+}
+
+```
+
+# Find closest weather station and distance
+```{r}
+calls2$mindistance = pmin(calls2$distance1,calls2$distance2,calls2$distance3,calls2$distance4,calls2$distance5,calls2$distance6,calls2$distance7,calls2$distance8)
+calls2$minlocation = NA
+for (i in 1:nrow(calls2)) {
+  if (!is.na(calls2$mindistance[i])){
+  calls2$minlocation[i] = which.min(c(calls2$distance1[i],calls2$distance2[i],calls2$distance3[i],calls2$distance4[i],calls2$distance5[i],calls2$distance6[i],calls2$distance7[i],calls2$distance8[i]))
+  }
+  else {
+  next }
+}
+```
+
+
+# Map call to condition 
+```{r}
+conditions2$call = 0
+
+for (i in 1:nrow(calls2)) {
+  
+  timediff = difftime(conditions2$DateTime[conditions2$stationid == calls2$minlocation[i]],calls2$Datetime[i],units = "mins")
+  index = which(conditions2$stationid == calls2$minlocation[i])
+  closest_time = which.min(abs(timediff))
+  conditions2$call[index[closest_time]] = conditions2$call[index[closest_time]]+1
+  
+}
+
+```
+
+## Create Variables
+
+```{r}
+library(chron)
+conditions2$weekend = as.numeric(is.weekend(conditions2$DateTime))
+
+conditions2$morning <- as.numeric(hour(conditions2$DateTime) %in% c(5:11)) 
+conditions2$afternoon <- as.numeric(hour(conditions2$DateTime) %in% c(12:16))
+conditions2$evening <- as.numeric(hour(conditions2$DateTime) %in% c(17:21))
+conditions2$night <-  as.numeric(hour(conditions2$DateTime) %in% c(0:4,22:24))
+
+holidays = as.Date(c("2021-02-14","2020-03-17","2020-05-05","2020-05-25","2020-05-24","2020-05-23","2020-07-04","2020-07-03","2020-09-07","2020-09-06","2020-09-05","2020-10-31","2020-11-26","2020-12-24","2020-12-25","2020-12-31","2021-01-01"))
+
+conditions2$holiday <- as.numeric(date(conditions2$DateTime) %in% holidays)
+
+conditions2$location1 = as.numeric(conditions2$stationid ==1)
+conditions2$location2 = as.numeric(conditions2$stationid ==2)
+conditions2$location3 = as.numeric(conditions2$stationid ==3)
+conditions2$location4 = as.numeric(conditions2$stationid ==4)
+conditions2$location5 = as.numeric(conditions2$stationid ==5)
+conditions2$location6 = as.numeric(conditions2$stationid ==6)
+conditions2$location7 = as.numeric(conditions2$stationid ==7)
+conditions2$location8 = as.numeric(conditions2$stationid ==8)
+
+
+conditions2$month = as.numeric(month(conditions2$DateTime))
+conditions2$day = as.numeric(day(conditions2$DateTime))
+conditions2$hour = as.numeric(hour(conditions2$DateTime))
+```
+
+# Explore number of calls per hour (row) and create binary 1/0 for call rate considered high volume
+```{r}
+hist(conditions2$call, freq= T, col = "lightskyblue1", xlab = "Calls", main = "Histogram of Calls")
+conditions2 =conditions2[date(conditions2$DateTime) != "2020-06-02" ,]
+hist(conditions2$call, freq= T,breaks = 40, col = "lightskyblue1", xlab = "Calls", main = "Histogram of Calls")
+```
+
+
+```{r}
+percent_call_0 = length(which(conditions2$call == 0))/nrow(conditions2)
+percent_call_1 = length(which(conditions2$call == 1))/nrow(conditions2)
+percent_call_2 = length(which(conditions2$call == 2))/nrow(conditions2)
+percent_call_3 = length(which(conditions2$call == 3))/nrow(conditions2)
+print(percent_call_0)
+print(percent_call_1)
+print(percent_call_2)
+print(percent_call_3)
+print(sum(percent_call_0+percent_call_1+percent_call_2+percent_call_3))
+
+
+```
+
+
+
+
+
+```{r}
+#Define number of calls/hour which is considered high volume
+high_volume = 7
+conditions2$high_volume = as.numeric(conditions2$call >= high_volume)
+call_frequency = table(conditions2$call)
+call_frequency
+sum(call_frequency[1:high_volume])
+sum(call_frequency[(high_volume+1):69])
+mean(conditions2$call)
+median(conditions2$call)
+
+library(psych)
+describe(conditions2$call)
+
+write.csv(conditions2,"conditions2excel.csv")
+nrow(conditions2)
+max(conditions2$DateTime)
+min(conditions2$DateTime)
+```
+
+## Predict high volume call rate
+
+# Create train and test subsets
+
+```{r}
+split <- sample.split(conditions2$high_volume, SplitRatio = 0.7)
+
+conditions_train = conditions2[split,]
+conditions_test = conditions2[!split,]
+```
+
+
+# Build tree model
+```{r}
+calls_tree_format = high_volume ~ RoadSurfaceTemperature + AirTemperature + location1 + location2 +location3 + location4 + location5 + location6 + location7 + location8 + weekend + morning + afternoon + evening + night + holiday + month + day + hour
+
+calls_tree = rpart(calls_tree_format, data = conditions_train, method = "class", minbucket = 10)
+
+predictions_test = predict(calls_tree, newdata = conditions_test, type = "class")
+
+confusion_matrix = table(conditions_test$high_volume,predictions_test)
+confusion_matrix
+
+accuracy = sum(diag(confusion_matrix))/sum(confusion_matrix)
+accuracy
+```
+```{r}
+prp(calls_tree)
+```
+
+
+# Build XGBoost classification model
+
+```{r}
+library(xgboost)
+
+col = c(5,6,9,11:27)
+
+conditions_train_xgb = as.data.frame(conditions_train)
+conditions_test_xgb = as.data.frame(conditions_test)
+
+calls.xgb <- xgboost(data = data.matrix(conditions_train_xgb[,col]), 
+                  label = conditions_train_xgb[,28], 
+                  eta = 0.1,
+                  max_depth = 6, 
+                  nround=100, 
+                  subsample = 1,
+                  colsample_bytree = 1,
+                  num_class = 1,
+                  min_child_weight = 5,
+                  gamma = 5,
+                  nthread = 30,
+                  eval_metric = "logloss",
+                  objective = "binary:logistic",
+                  verbose = 0
+                  )
+
+
+predictions_test_xgb =round(predict(calls.xgb,data.matrix(conditions_test_xgb[,col])), digits = 0)
+
+confusion_matrix_xgb = table(conditions_test$high_volume,predictions_test_xgb)
+confusion_matrix_xgb
+
+accuracy_xgb = sum(diag(confusion_matrix_xgb))/sum(confusion_matrix_xgb)
+accuracy_xgb
+```
+
+
+
+
+# Assess performance of models
+
+Simple method will predict all low volume calls (high_Volume = 0)
+```{r}
+baseline_accuracy = max(1-sum(conditions_test$high_volume)/nrow(conditions_test),sum(conditions_test$high_volume)/nrow(conditions_test))
+
+print(baseline_accuracy)
+```
+
+
+
+## Clustering
+
+```{r}
+conditions3 <- as.data.frame(conditions2[,c(5,6,11:16,17:24,25:27)])
+preproc = preProcess(conditions3)
+conditions_norm = predict(preproc, conditions3)
+
+library(psych)
+describe(conditions_norm)
+```
+
+
+```{r}
+number_of_clusters = 7
+conditions_kmeans = kmeans(conditions_norm, centers = number_of_clusters)
+cluster_count = table(conditions_kmeans$cluster)
+cluster_count
+```
+
+```{r}
+centroids = matrix(data = NA, nrow = ncol(conditions3) , ncol = number_of_clusters)
+rownames(centroids) <- c("Road Temp","Air Temp","Weekend","Morning","Afternoon","Evening","Night","Holiday","Location 1","Location 2","Location 3","Location 4","Location 5","Location 6","Location 7","Location 8","Month","Day","Hour")
+colnames(centroids) <- c(1:number_of_clusters)
+```
+
+```{r}
+for (i in 1:ncol(conditions3)){
+centroids[i,] <- tapply(conditions3[, i], conditions_kmeans$cluster, mean)
+}
+centroids
+```
+# Create train and test subsets for clusters
+```{r}
+cluster1 = conditions2[conditions_kmeans$cluster == 1,]
+split1 <- sample.split(cluster1$high_volume, SplitRatio = 0.7)
+
+cluster1_train = cluster1[split1,]
+cluster1_test = cluster1[!split1,]
+
+cluster2 = conditions2[conditions_kmeans$cluster == 2,]
+split2 <- sample.split(cluster2$high_volume, SplitRatio = 0.7)
+
+cluster2_train = cluster2[split2,]
+cluster2_test = cluster2[!split2,]
+
+cluster3 = conditions2[conditions_kmeans$cluster == 3,]
+split3 <- sample.split(cluster3$high_volume, SplitRatio = 0.7)
+
+cluster3_train = cluster3[split3,]
+cluster3_test = cluster3[!split3,]
+
+
+cluster4 = conditions2[conditions_kmeans$cluster == 4,]
+split4 <- sample.split(cluster4$high_volume, SplitRatio = 0.7)
+
+cluster4_train = cluster4[split4,]
+cluster4_test = cluster4[!split4,]
+
+cluster5 = conditions2[conditions_kmeans$cluster == 5,]
+split5 <- sample.split(cluster5$high_volume, SplitRatio = 0.7)
+
+cluster5_train = cluster5[split5,]
+cluster5_test = cluster5[!split5,]
+
+if (number_of_clusters >=6){
+cluster6 = conditions2[conditions_kmeans$cluster == 6,]
+split6 <- sample.split(cluster6$high_volume, SplitRatio = 0.7)
+
+cluster6_train = cluster6[split6,]
+cluster6_test = cluster6[!split6,]}
+
+if (number_of_clusters >=7){
+cluster7 = conditions2[conditions_kmeans$cluster == 7,]
+split7 <- sample.split(cluster7$high_volume, SplitRatio = 0.7)
+
+cluster7_train = cluster7[split7,]
+cluster7_test = cluster7[!split7,]}
+
+
+```
+
+
+```{r}
+calls_tree1 = rpart(calls_tree_format, data = cluster1_train, method = "class", minbucket =10)
+
+predictions_test1 = predict(calls_tree1, newdata = cluster1_test, type = "class")
+
+confusion_matrix1 = table(cluster1_test$high_volume,predictions_test1)
+confusion_matrix1
+
+accuracy1 = sum(diag(confusion_matrix1))/sum(confusion_matrix1)
+accuracy1
+prp(calls_tree1)
+
+```
+
+```{r}
+calls_tree2 = rpart(calls_tree_format, data = cluster2_train, method = "class", minbucket = 30)
+
+predictions_test2 = predict(calls_tree2, newdata = cluster2_test, type = "class")
+
+confusion_matrix2 = table(cluster2_test$high_volume,predictions_test2)
+confusion_matrix2
+
+accuracy2 = sum(diag(confusion_matrix2))/sum(confusion_matrix2)
+accuracy2
+prp(calls_tree2)
+
+```
+
+```{r}
+calls_tree3 = rpart(calls_tree_format, data = cluster3_train, method = "class", minbucket = 10)
+
+predictions_test3 = predict(calls_tree3, newdata = cluster3_test, type = "class")
+
+confusion_matrix3 = table(cluster3_test$high_volume,predictions_test3)
+confusion_matrix3
+
+accuracy3 = sum(diag(confusion_matrix3))/sum(confusion_matrix3)
+accuracy3
+prp(calls_tree3)
+```
+
+
+
+```{r}
+calls_tree4 = rpart(calls_tree_format, data = cluster4_train, method = "class", minbucket = 10)
+
+predictions_test4 = predict(calls_tree4, newdata = cluster4_test, type = "class")
+
+confusion_matrix4 = table(cluster4_test$high_volume,predictions_test4)
+confusion_matrix4
+
+accuracy4 = sum(diag(confusion_matrix4))/sum(confusion_matrix4)
+accuracy4
+prp(calls_tree4)
+
+```
+
+```{r}
+calls_tree5 = rpart(calls_tree_format, data = cluster5_train, method = "class", minbucket =10)
+
+predictions_test5 = predict(calls_tree5, newdata = cluster5_test, type = "class")
+
+confusion_matrix5 = table(cluster5_test$high_volume,predictions_test5)
+confusion_matrix5
+
+accuracy5 = sum(diag(confusion_matrix5))/sum(confusion_matrix5)
+accuracy5
+prp(calls_tree5)
+```
+
+```{r}
+calls_tree6 = rpart(calls_tree_format, data = cluster6_train, method = "class", minbucket =10)
+
+predictions_test6 = predict(calls_tree6, newdata = cluster6_test, type = "class")
+
+confusion_matrix6 = table(cluster6_test$high_volume,predictions_test6)
+confusion_matrix6
+
+accuracy6 = sum(diag(confusion_matrix6))/sum(confusion_matrix6)
+accuracy6
+prp(calls_tree6)
+```
+```{r}
+calls_tree7 = rpart(calls_tree_format, data = cluster7_train, method = "class", minbucket =10)
+
+predictions_test7 = predict(calls_tree7, newdata = cluster7_test, type = "class")
+
+confusion_matrix7 = table(cluster7_test$high_volume,predictions_test7)
+confusion_matrix7
+
+accuracy7 = sum(diag(confusion_matrix7))/sum(confusion_matrix7)
+accuracy7
+prp(calls_tree7)
+```
+
+
+
+```{r}
+print(c(baseline_accuracy,accuracy,accuracy1,accuracy2, accuracy3,accuracy4,accuracy5,accuracy6, accuracy7))
+```
+
+```{r}
+print((accuracy1*cluster_count[1]+accuracy2*cluster_count[2]+accuracy3*cluster_count[3]+accuracy4*cluster_count[4]+accuracy5*cluster_count[5]+accuracy6*cluster_count[6])/sum(cluster_count))
+
+print((accuracy1*cluster_count[1]+accuracy2*cluster_count[2]+accuracy3*cluster_count[3]+accuracy4*cluster_count[4]+accuracy5*cluster_count[5])/sum(cluster_count))
+
+print((accuracy1*cluster_count[1]+accuracy2*cluster_count[2]+accuracy3*cluster_count[3]+accuracy4*cluster_count[4]+accuracy5*cluster_count[5]+accuracy6*cluster_count[6]+accuracy7*cluster_count[7])/sum(cluster_count))
+```
+
+
+
+```{r}
+table(calls2$Type)
+```
+
+
+table(calls$Type)
+
